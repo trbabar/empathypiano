@@ -36,7 +36,6 @@ def emotion_thread():
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     cap = cv2.VideoCapture(0)
 
-    # while the camera is on, capture the 
     while not stop_camera:
         ret, frame = cap.read()
         if not ret:

@@ -1,6 +1,4 @@
-tf_keras
-pygame
-numpy
 opencv-python
 deepface
-scipy
+tf_keras
+pyserial

@@ -1,8 +1,11 @@
+# PRESS RUN IN THE TOP RIGHT CORNER
+
 import pygame # used for the gui
 import numpy as np # used for changing audio
 import threading # allows us to do emotion detection and piano at same time
 import cv2 # computer vision to detect camera input
 import wave # reads .wav sound files
+import serial
 from scipy.signal import resample # used for pitch shifting
 from deepface import DeepFace # used to get emotion from camera data
 
@@ -31,11 +34,50 @@ KEY_LABELS = {
     'A': 'H', 'A#': 'U', 'B': 'J'
 }
 
+def arduino_thread():
+    global pressed_keys
+    try:
+        # Replace COM3 with your Arduino’s port (check Arduino IDE -> Tools -> Port)
+        arduino = serial.Serial('COM4', 9600, timeout=1)
+        print("Sucessfully connected to Arduino")
+
+        # Button-to-note mapping (adjust as needed)
+        button_note_map = {
+            0: 'C',
+            1: 'D',
+            2: 'E',
+            3: 'F',
+            4: 'G',
+            5: 'A',
+            6: 'B',
+            7: 'C#',
+            8: 'D#'
+        }
+
+        while True:
+            if arduino.in_waiting > 0:
+                line = arduino.readline().decode().strip()
+                if line.startswith("PRESS"):
+                    idx = int(line.split()[1])
+                    note = button_note_map.get(idx)
+                    if note:
+                        pressed_keys.add(note)
+                        play_note(note)
+                elif line.startswith("RELEASE"):
+                    idx = int(line.split()[1])
+                    note = button_note_map.get(idx)
+                    if note and note in pressed_keys:
+                        pressed_keys.discard(note)
+
+    except Exception as e:
+        print(f"Arduino connection error: {e}")
+
 def emotion_thread():
     global current_emotion, stop_camera
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     cap = cv2.VideoCapture(0)
 
+    # while the camera is on, capture the 
     while not stop_camera:
         ret, frame = cap.read()
         if not ret:
@@ -109,10 +151,12 @@ def play_note(note):
     sound = generate_note(note)
     sound.play()
 
-threading.Thread(target=emotion_thread, daemon=True).start()
-
 pygame.init()
 pygame.mixer.init(frequency=44100, channels=2)
+
+threading.Thread(target=emotion_thread, daemon=True).start()
+threading.Thread(target=arduino_thread, daemon=True).start()
+
 WIDTH, HEIGHT = 1920, 1020
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Empathy Piano 10.15.25")

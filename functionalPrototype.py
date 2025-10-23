@@ -125,6 +125,7 @@ def generate_note(note):
     base_audio, base_rate, channels = load_wav(base_file)
 
     semitones = NOTE_MAP[note]
+    # check for 4 different scales  
     ratio = 2 ** (semitones / 12.0)
 
     new_length = int(len(base_audio) / ratio)

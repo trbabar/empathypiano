@@ -3,16 +3,21 @@ import numpy as np # used for changing audio
 import threading # allows us to do emotion detection and piano at same time
 import cv2 # computer vision to detect camera input
 import wave # reads .wav sound files
+import io
 from scipy.signal import resample # used for pitch shifting
 from deepface import DeepFace # used to get emotion from camera data
 import keyboard
 pygame.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=1)
+
 
 current_emotion = "neutral" # the default is neutral so it doesn't start as happy or sad
 stop_camera = False # stop camera will be true when program is turned off
 current_emotion = "neutral"
 update_emotion_enabled = False
 
+note_frequencies = {}
+cached_sounds = {}
 
 # each note is assigned a value for shifting the pitch
 # F is the base note in the middle, E is shifted down by 1, F# shifted up, etc.
@@ -69,6 +74,14 @@ def emotion_thread():
     cap.release()
     cv2.destroyAllWindows()
 
+def detect_base_frequency(audio: np.ndarray, rate: int) -> float:
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+    segment = audio[: min(len(audio), rate * 2)]
+    spectrum = np.fft.rfft(segment)
+    freqs = np.fft.rfftfreq(len(segment), d=1 / rate)
+    peak = freqs[np.argmax(np.abs(spectrum))]
+    return peak
 
 def load_wav(filename):
     with wave.open(filename, 'rb') as wf:
@@ -82,13 +95,10 @@ def load_wav(filename):
     return audio, rate, channels
 
 
-def generate_note(note):
-    base_file = "happy.wav" if current_emotion == "happy" else "sad3.wav"
-    base_audio, base_rate, channels = load_wav(base_file)
-
+def generate_note(note: str, base_audio: np.ndarray, base_rate: int, channels: int, base_freq: float):
     semitones = NOTE_MAP[note]
     ratio = 2 ** (semitones / 12.0)
-
+    
     new_length = int(len(base_audio) / ratio)
     resampled = resample(base_audio, new_length)
 
@@ -99,27 +109,53 @@ def generate_note(note):
     else:
         resampled[-fade_len:] *= fade_out
 
-    resampled = resampled / np.max(np.abs(resampled))
-
+    resampled /= max(1e-9, np.max(np.abs(resampled)))
     resampled = (resampled * 32767).astype(np.int16)
-    if channels > 1:
-        sound = pygame.mixer.Sound(buffer=resampled.tobytes())
-    else:
-        sound = pygame.mixer.Sound(buffer=resampled.tobytes())
+
+    virtual_wav = io.BytesIO()
+    with wave.open(virtual_wav, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(base_rate)
+        wf.writeframes(resampled.tobytes())
+    virtual_wav.seek(0)
+    sound = pygame.mixer.Sound(virtual_wav)
+
+    # # For reference/debug printing
+    # freq_hz = base_freq * ratio
+    # note_frequencies[note] = freq_hz
+    # print(f"Cached {note}: {freq_hz:.2f} Hz (ratio={ratio:.4f})")
+
     return sound
+
+def load_sample_for_emotion():
+    base_file = "happy.wav" if current_emotion.upper() == "HAPPY" else "new.wav"
+    base_audio, base_rate, channels = load_wav(base_file)
+    base_freq = detect_base_frequency(base_audio, base_rate)
+    print(f"[{current_emotion.upper()}] Base Frequency: {base_freq:.2f} Hz")
+
+    sounds = {}
+    for n in NOTE_MAP.keys():
+        sounds[n] = generate_note(n, base_audio, base_rate, channels, base_freq)
+    return sounds
 
 
 def play_note(note):
-    sound = generate_note(note)
-    sound.play()
+    global cached_sounds
+    if current_emotion.upper() not in cached_sounds:
+        cached_sounds[current_emotion.upper()] = load_sample_for_emotion()
+
+    sounds = cached_sounds[current_emotion.upper()]
+    sound = sounds[note]
+    channel = pygame.mixer.find_channel(True)
+    if channel:
+        channel.play(sound)
 
 threading.Thread(target=emotion_thread, daemon=True).start()
 
-pygame.init()
-pygame.mixer.init(frequency=44100, channels=2)
 WIDTH, HEIGHT = 1920, 1020
 screen = pygame.display.set_mode((WIDTH, HEIGHT-300))
-pygame.display.set_caption("Empathy Piano 10.15.25")
+pygame.display.set_caption("Empathy Piano Digital")
 
 font = pygame.font.SysFont("Heebo", 32)
 big_font = pygame.font.SysFont("Heebo", 100)

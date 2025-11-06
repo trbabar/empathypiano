@@ -9,6 +9,7 @@ import keyboard
 import librosa
 import time
 import os
+import serial
 
 pygame.init()
 pygame.mixer.init(frequency=44100, size=-16, channels=1)
@@ -44,7 +45,44 @@ KEY_LABELS = {
     'F': 'F', 'F#': 'T', 'G': 'G', 'G#': 'Y',
     'A': 'H', 'A#': 'U', 'B': 'J'
 }
+def arduino_thread():
+    global pressed_keys
+    try:
+        # Replace COM3 with your Arduino’s port (check Arduino IDE -> Tools -> Port)
+        arduino = serial.Serial('COM4', 9600, timeout=1)
+        print("Sucessfully connected to Arduino")
 
+        # Button-to-note mapping (adjust as needed)
+        button_note_map = {
+            0: 'C',
+            1: 'D',
+            2: 'E',
+            3: 'F',
+            4: 'G',
+            5: 'A',
+            6: 'B',
+            7: 'C#',
+            8: 'D#'
+        }
+
+        while True:
+            if arduino.in_waiting > 0:
+                line = arduino.readline().decode().strip()
+                if line.startswith("PRESS"):
+                    idx = int(line.split()[1])
+                    note = button_note_map.get(idx)
+                    if note:
+                        pressed_keys.add(note)
+                        play_note(note)
+                elif line.startswith("RELEASE"):
+                    idx = int(line.split()[1])
+                    note = button_note_map.get(idx)
+                    if note and note in pressed_keys:
+                        pressed_keys.discard(note)
+
+    except Exception as e:
+        print(f"Arduino connection error: {e}")
+        
 def emotion_thread():
     global current_emotion, stop_camera, gesture_state, update_emotion_enabled, camera_ready
     from deepface import DeepFace
@@ -375,6 +413,8 @@ def main():
     loading_screen("Loading camera...")
     cam_thread = threading.Thread(target=emotion_thread, daemon=True)
     cam_thread.start()
+    arduino_thread = threading.Thread(target=arduino_thread, daemon=True)
+    arduino_thread.start()
     while not camera_ready and not stop_camera:
         loading_screen("Loading camera...")
         time.sleep(0.1)

@@ -5,8 +5,11 @@ import cv2 # computer vision to detect camera input
 import wave # reads .wav sound files
 import io
 from scipy.signal import resample # used for pitch shifting
-from deepface import DeepFace # used to get emotion from camera data
 import keyboard
+import librosa
+import time
+import os
+
 pygame.init()
 pygame.mixer.init(frequency=44100, size=-16, channels=1)
 
@@ -15,6 +18,9 @@ current_emotion = "neutral" # the default is neutral so it doesn't start as happ
 stop_camera = False # stop camera will be true when program is turned off
 current_emotion = "neutral"
 update_emotion_enabled = False
+current_octave = 0
+camera_ready = False
+gesture_state = None
 
 note_frequencies = {}
 cached_sounds = {}
@@ -42,30 +48,67 @@ KEY_LABELS = {
 }
 
 def emotion_thread():
-    global current_emotion, stop_camera, update_emotion_enabled
+    global current_emotion, stop_camera, gesture_state, update_emotion_enabled, camera_ready
+    from deepface import DeepFace
+    import mediapipe as mp
+    import tensorflow as tf
+
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.6)
+    mp_draw = mp.solutions.drawing_utils
+
     cap = cv2.VideoCapture(0)
+    camera_ready = True
     current_emotion = "neutral"
+
+    def is_thumbs_up(hand_landmarks):
+        thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+        thumb_ip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP]
+        index_mcp = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+        return thumb_tip.y < index_mcp.y and thumb_tip.y < thumb_ip.y
+
+    def is_thumbs_down(hand_landmarks):
+        thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
+        thumb_ip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_IP]
+        index_mcp = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+        return thumb_tip.y > index_mcp.y and thumb_tip.y > thumb_ip.y
 
     while not stop_camera:
         ret, frame = cap.read()
         if not ret:
             continue
 
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
 
         if update_emotion_enabled:
             for (x, y, w, h) in faces:
                 face_roi = rgb[y:y + h, x:x + w]
-                result = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False)
-                emotions = result[0]['dominant_emotion']
-
-                current_emotion = emotions
+                try:
+                    result = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False)
+                    current_emotion = result[0]['dominant_emotion']
+                except Exception:
+                    pass
                 break
 
-        cv2.imshow('Emotion Detection', frame)
+        results = hands.process(rgb)
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                if is_thumbs_up(hand_landmarks):
+                    gesture_state = "thumbs_up"
+                elif is_thumbs_down(hand_landmarks):
+                    gesture_state = "thumbs_down"
+                else:
+                    gesture_state = None
+                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        else:
+            gesture_state = None
+            
+        # Uncomment this for camera window:
+        # cv2.imshow("Camera Feed", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             stop_camera = True
@@ -94,67 +137,168 @@ def load_wav(filename):
         audio /= np.iinfo(np.int16).max
     return audio, rate, channels
 
-
 def generate_note(note: str, base_audio: np.ndarray, base_rate: int, channels: int, base_freq: float):
     semitones = NOTE_MAP[note]
-    ratio = 2 ** (semitones / 12.0)
-    
-    new_length = int(len(base_audio) / ratio)
-    resampled = resample(base_audio, new_length)
-
-    fade_len = min(500, len(resampled))
-    fade_out = np.linspace(1, 0, fade_len)
     if channels > 1:
-        resampled[-fade_len:, :] *= fade_out[:, None]
+        audio_mono = np.mean(base_audio, axis=1)
     else:
-        resampled[-fade_len:] *= fade_out
+        audio_mono = base_audio
+        
+    shifted = librosa.effects.pitch_shift(audio_mono, sr=base_rate, n_steps=semitones)
+    fade_len = min(500, len(shifted))
+    fade_out = np.linspace(1, 0, fade_len)
+    shifted[-fade_len:] *= fade_out
 
-    resampled /= max(1e-9, np.max(np.abs(resampled)))
-    resampled = (resampled * 32767).astype(np.int16)
+    shifted /= max(1e-9, np.max(np.abs(shifted)))
+    shifted = (shifted * 32767).astype(np.int16)
 
     virtual_wav = io.BytesIO()
     with wave.open(virtual_wav, 'wb') as wf:
-        wf.setnchannels(channels)
+        wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(base_rate)
-        wf.writeframes(resampled.tobytes())
+        wf.writeframes(shifted.tobytes())
     virtual_wav.seek(0)
     sound = pygame.mixer.Sound(virtual_wav)
-
-    # # For reference/debug printing
-    # freq_hz = base_freq * ratio
-    # note_frequencies[note] = freq_hz
-    # print(f"Cached {note}: {freq_hz:.2f} Hz (ratio={ratio:.4f})")
-
     return sound
 
-def load_sample_for_emotion():
-    base_file = "happy.wav" if current_emotion.upper() == "HAPPY" else "new.wav"
+def load_sample_for_emotion(emotion_name=None):
+    global current_emotion
+    emotion_files = {
+        "ANGRY": "angry.wav",
+        "DISGUSTED": "disgusted.wav",
+        "FEARFUL": "fearful.wav",
+        "HAPPY": "happy.wav",
+        "NEUTRAL": "neutral.wav",
+        "SAD": "sad.wav",
+        "SURPRISED": "surprised.wav"
+    }
+
+    emotion_key = (emotion_name or current_emotion).upper()
+    base_file = emotion_files.get(emotion_key, "new.wav")
+
+    if not os.path.exists(base_file):
+        base_file = "new.wav"
+
     base_audio, base_rate, channels = load_wav(base_file)
     base_freq = detect_base_frequency(base_audio, base_rate)
-    print(f"[{current_emotion.upper()}] Base Frequency: {base_freq:.2f} Hz")
 
     sounds = {}
     for n in NOTE_MAP.keys():
         sounds[n] = generate_note(n, base_audio, base_rate, channels, base_freq)
     return sounds
 
+def preload_all_sounds():
+    global cached_sounds
+
+    emotions = ["angry", "disgusted", "fearful", "happy", "neutral", "sad", "surprised"]
+    octaves = [-1, 0, 1]  # one down, normal, one up
+    total = len(emotions) * len(octaves)
+    count = 0
+    start_all = time.time()
+
+    for emotion in emotions:
+        # Base sounds for emotion
+        if emotion.upper() not in cached_sounds:
+            cached_sounds[emotion.upper()] = load_sample_for_emotion(emotion)
+        base_sounds = cached_sounds[emotion.upper()]
+
+        for octave_shift in octaves:
+            cache_key = f"{emotion.upper()}_{octave_shift}"
+            if cache_key in cached_sounds:
+                count += 1
+                continue
+
+            shifted_sounds = {}
+            for n, s in base_sounds.items():
+                arr = pygame.sndarray.array(s).astype(np.float32)
+                if arr.ndim > 1:
+                    arr = np.mean(arr, axis=1)
+                arr /= max(1e-9, np.max(np.abs(arr)))
+
+                if octave_shift != 0:
+                    try:
+                        shifted = librosa.effects.pitch_shift(arr, sr=44100, n_steps=octave_shift * 12)
+                    except Exception:
+                        shifted = arr
+                else:
+                    shifted = arr
+
+                shifted = np.clip(shifted, -1.0, 1.0)
+                shifted = (shifted * 32767).astype(np.int16)
+                virtual_wav = io.BytesIO()
+                with wave.open(virtual_wav, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(44100)
+                    wf.writeframes(shifted.tobytes())
+                virtual_wav.seek(0)
+                shifted_sounds[n] = pygame.mixer.Sound(virtual_wav)
+
+            cached_sounds[cache_key] = shifted_sounds
+            count += 1
 
 def play_note(note):
-    global cached_sounds
-    if current_emotion.upper() not in cached_sounds:
-        cached_sounds[current_emotion.upper()] = load_sample_for_emotion()
+    global cached_sounds, current_octave
 
-    sounds = cached_sounds[current_emotion.upper()]
-    sound = sounds[note]
-    channel = pygame.mixer.find_channel(True)
-    if channel:
-        channel.play(sound)
+    try:
+        cache_key = f"{current_emotion.upper()}_{current_octave}"
 
-threading.Thread(target=emotion_thread, daemon=True).start()
+        if cache_key not in cached_sounds:
+            if current_emotion.upper() not in cached_sounds:
+                cached_sounds[current_emotion.upper()] = load_sample_for_emotion()
 
-WIDTH, HEIGHT = 1920, 1020
-screen = pygame.display.set_mode((WIDTH, HEIGHT-300))
+            base_sounds = cached_sounds[current_emotion.upper()]
+            shifted_sounds = {}
+            for n, s in base_sounds.items():
+                arr = pygame.sndarray.array(s).astype(np.float32)
+                if arr.ndim > 1:
+                    arr = np.mean(arr, axis=1)
+                arr /= max(1e-9, np.max(np.abs(arr)))
+
+                if current_octave != 0:
+                    try:
+                        shifted = librosa.effects.pitch_shift(arr, sr=44100, n_steps=current_octave * 12)
+                    except Exception as e:
+                        print("Pitch shift error:", e)
+                        shifted = arr
+                else:
+                    shifted = arr
+
+                shifted = np.clip(shifted, -1.0, 1.0)
+                shifted = (shifted * 32767).astype(np.int16)
+
+                virtual_wav = io.BytesIO()
+                with wave.open(virtual_wav, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(44100)
+                    wf.writeframes(shifted.tobytes())
+                virtual_wav.seek(0)
+                shifted_sounds[n] = pygame.mixer.Sound(virtual_wav)
+
+            cached_sounds[cache_key] = shifted_sounds
+
+        sounds = cached_sounds[cache_key]
+        sound = sounds[note]
+        channel = pygame.mixer.find_channel(True)
+        if channel:
+            channel.play(sound)
+
+    except Exception as e:
+        print("play_note error:", e)
+
+def loading_screen(message="Loading..."):
+    font = pygame.font.SysFont("Heebo", 90)
+    screen.fill((65, 65, 65))
+    label = font.render(message, True, (255, 255, 255))
+    screen.blit(label, (WIDTH // 2 - label.get_width() // 2, HEIGHT // 2 - 50))
+    pygame.display.flip()
+    pygame.event.pump()
+
+info = pygame.display.Info()
+WIDTH, HEIGHT = info.current_w, info.current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT-60))
 pygame.display.set_caption("Empathy Piano Digital")
 
 font = pygame.font.SysFont("Heebo", 32)
@@ -203,8 +347,10 @@ def draw_piano():
     color = EMOTION_COLORS.get(current_emotion.upper(), NEUTRAL)
     screen.fill((color))
     title_label = big_font.render("THE " + current_emotion.upper() + " PIANO", True, WHITE)
+    octave_label = big_font.render(f"OCTAVE: {current_octave:+d}", True, WHITE)
 
     screen.blit(title_label, (WIDTH // 2 - title_label.get_width() // 2, 30))
+    screen.blit(octave_label, (WIDTH // 2 - octave_label.get_width() // 2, 800))
 
     for i, note in enumerate(white_keys):
         rect = pygame.Rect(piano_x + i * key_width, piano_y, key_width, key_height)
@@ -226,30 +372,67 @@ def draw_piano():
 
 running = True
 camera_thread = None
-while running:
-    draw_piano()
-    pygame.display.flip()
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
 
-        elif event.type == pygame.KEYDOWN:
-            if event.key in KEY_BINDINGS:
-                note = KEY_BINDINGS[event.key]
-                if note not in pressed_keys:
-                    pressed_keys.add(note)
-                    play_note(note)
+def main():
+    global stop_camera, current_octave, gesture_state, update_emotion_enabled, camera_ready
+    loading_screen("Loading camera...")
+    cam_thread = threading.Thread(target=emotion_thread, daemon=True)
+    cam_thread.start()
+    while not camera_ready and not stop_camera:
+        loading_screen("Loading camera...")
+        time.sleep(0.1)
+    running = True
+    last_octave_change = 0
+    try:
+        while running:
+            current_time = time.time()
+            if gesture_state == "thumbs_up" and current_time - last_octave_change > 1:
+                if current_octave < 1:
+                    current_octave += 1
+                    last_octave_change = current_time
+                gesture_state = None
 
-            elif event.key == pygame.K_5:
-                update_emotion_enabled = True 
+            elif gesture_state == "thumbs_down" and current_time - last_octave_change > 1:
+                if current_octave > -1:
+                    current_octave -= 1
+                    last_octave_change = current_time
+                gesture_state = None
+            draw_piano()
+            pygame.display.flip()
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                    stop_camera = True
+                    break
 
-        elif event.type == pygame.KEYUP:
-            if event.key in KEY_BINDINGS:
-                note = KEY_BINDINGS[event.key]
-                pressed_keys.discard(note)
+                elif event.type == pygame.KEYDOWN:
+                    if event.key in KEY_BINDINGS:
+                        note = KEY_BINDINGS[event.key]
+                        if note not in pressed_keys:
+                            pressed_keys.add(note)
+                            play_note(note)
 
-            elif event.key == pygame.K_5:
-                update_emotion_enabled = False
+                    elif event.key == pygame.K_5:
+                        update_emotion_enabled = True 
+                elif event.type == pygame.KEYUP:
+                    if event.key in KEY_BINDINGS:
+                        note = KEY_BINDINGS[event.key]
+                        pressed_keys.discard(note)
 
-pygame.quit()
-stop_camera = True
+                    elif event.key == pygame.K_5:
+                        update_emotion_enabled = False
+    finally:
+        stop_camera = True
+        pygame.quit()
+        try:
+            cam_thread.join(timeout=1)
+        except:
+            pass
+        cv2.destroyAllWindows()
+        raise SystemExit 
+
+if __name__ == "__main__":
+    loading_screen("Loading sounds...")
+    preload_all_sounds()
+    loading_screen("Loading camera...")
+    main()

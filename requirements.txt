@@ -1,4 +1,10 @@
+pygame
+numpy
 opencv-python
+scipy
+keyboard
+librosa
+tensorflow
 deepface
-tf_keras
-pyserial
+mediapipe
+protobuf

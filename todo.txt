@@ -1,6 +1,0 @@
-To-Do:
-- Add more expressions
-- Disable the camera pop-up
-- Hold a note
-- Change octaves
-- Arduino functionality

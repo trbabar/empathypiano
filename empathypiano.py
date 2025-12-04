@@ -49,6 +49,12 @@ KEY_LABELS = {
     'A': 'H', 'A#': 'U', 'B': 'J'
 }
 
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+os.environ["SDL_AUDIODRIVER"] = "dummy"
+os.environ["SDL_VIDEODRIVER"] = ""
+
 def emotion_thread():
     global current_emotion, stop_camera, gesture_state, update_emotion_enabled, camera_ready
     from deepface import DeepFace
@@ -109,7 +115,7 @@ def emotion_thread():
         else:
             gesture_state = None
             
-        # Uncomment this for camera window:
+        # Uncomment this for camera window
         # cv2.imshow("Camera Feed", frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -121,41 +127,49 @@ def emotion_thread():
 
 def arduino_thread():
     global pressed_keys
-    try:
-        arduino = serial.Serial('COM3', 9600, timeout=1)
-        print("Sucessfully connected to Arduino")
-        button_note_map = {
-            0: 'C',
-            1: 'C#',
-            2: 'D',
-            3: 'D#',
-            4: 'E',
-            5: 'F',
-            6: 'F#',
-            7: 'G',
-            8: 'G#',
-            9: 'A',
-            10: 'A#',
-            11: 'B'
-        }
 
+    ports_to_try = ["COM3", "COM4", "COM5"]
+    arduino = None
+
+    for port_name in ports_to_try:
+        try:
+            arduino = serial.Serial(port_name, 9600, timeout=1)
+            print(f"Successfully connected to Arduino on {port_name}")
+            break
+        except Exception:
+            continue
+
+    if arduino is None:
+        print("Arduino connection error: Not found")
+        return
+
+    button_note_map = {
+        0: 'C', 1: 'C#', 2: 'D', 3: 'D#', 4: 'E',
+        5: 'F', 6: 'F#', 7: 'G', 8: 'G#', 9: 'A',
+        10: 'A#', 11: 'B'
+    }
+
+    try:
         while True:
             if arduino.in_waiting > 0:
-                line = arduino.readline().decode().strip()
+                line = arduino.readline().decode(errors="ignore").strip()
+
                 if line.startswith("PRESS"):
                     idx = int(line.split()[1])
                     note = button_note_map.get(idx)
                     if note:
                         pressed_keys.add(note)
                         play_note(note)
+
                 elif line.startswith("RELEASE"):
                     idx = int(line.split()[1])
                     note = button_note_map.get(idx)
-                    if note and note in pressed_keys:
+                    if note in pressed_keys:
                         pressed_keys.discard(note)
 
     except Exception as e:
         print(f"Arduino connection error: {e}")
+
 
 def detect_base_frequency(audio: np.ndarray, rate: int) -> float:
     if audio.ndim > 1:
@@ -205,20 +219,20 @@ def generate_note(note: str, base_audio: np.ndarray, base_rate: int, channels: i
 def load_sample_for_emotion(emotion_name=None):
     global current_emotion
     emotion_files = {
-        "ANGRY": "angry.wav",
-        "DISGUSTED": "disgusting.wav",
-        "FEAR": "fearful.wav",
-        "HAPPY": "happy.wav",
-        "NEUTRAL": "neutral.wav",
-        "SAD": "sad.wav",
-        "SURPRISE": "surprised.wav"
+        "ANGRY": "sounds/angry.wav",
+        "DISGUSTED": "sounds/disgusting.wav",
+        "FEAR": "sounds/fearful.wav",
+        "HAPPY": "sounds/happy.wav",
+        "NEUTRAL": "sounds/neutral.wav",
+        "SAD": "sounds/sad.wav",
+        "SURPRISE": "sounds/surprised.wav"
     }
 
     emotion_key = (emotion_name or current_emotion).upper()
-    base_file = emotion_files.get(emotion_key, "new.wav")
+    base_file = emotion_files.get(emotion_key, "sounds/new.wav")
 
     if not os.path.exists(base_file):
-        base_file = "new.wav"
+        base_file = "sounds/new.wav"
 
     base_audio, base_rate, channels = load_wav(base_file)
     base_freq = detect_base_frequency(base_audio, base_rate)
@@ -340,8 +354,9 @@ WIDTH, HEIGHT = info.current_w, info.current_h
 screen = pygame.display.set_mode((WIDTH, HEIGHT-60))
 pygame.display.set_caption("Empathy Piano Digital")
 
-font = pygame.font.SysFont("Heebo", 32)
-big_font = pygame.font.SysFont("Heebo", 100)
+biggest_font = pygame.font.SysFont("Heebo", int(HEIGHT * 0.15))
+big_font = pygame.font.SysFont("Heebo", int(HEIGHT * 0.08))
+font = pygame.font.SysFont("Heebo", int(HEIGHT * 0.03))
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -380,21 +395,22 @@ black_keys = ['C#', 'D#', '', 'F#', 'G#', 'A#', '']
 white_rects = {}
 black_rects = {}
 pressed_keys = set()
-BUTTON_WIDTH = 100
-BUTTON_HEIGHT = 40
-BUTTON_X = WIDTH // 2 - BUTTON_WIDTH // 2
-BUTTON_Y = HEIGHT - BUTTON_HEIGHT - 150
+BUTTON_WIDTH = WIDTH * 0.08
+BUTTON_HEIGHT = HEIGHT * 0.05
+BUTTON_X = WIDTH * 0.46
+BUTTON_Y = HEIGHT * 0.85
 
 emotion_button_rect = pygame.Rect(BUTTON_X, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT)
 
 def draw_piano():
     color = EMOTION_COLORS.get(current_emotion.upper(), NEUTRAL)
     screen.fill((color))
-    title_label = big_font.render("THE " + current_emotion.upper() + " PIANO", True, WHITE)
+    title_label = biggest_font.render("THE " + current_emotion.upper() + " PIANO", True, WHITE)
     octave_label = big_font.render(f"OCTAVE: {current_octave:+d}", True, WHITE)
 
-    screen.blit(title_label, (WIDTH // 2 - title_label.get_width() // 2, 30))
-    screen.blit(octave_label, (WIDTH // 2 - octave_label.get_width() // 2, 800))
+    screen.blit(title_label, (WIDTH * 0.5 - title_label.get_width() / 2, HEIGHT * 0.05))
+    screen.blit(octave_label, (WIDTH * 0.5 - octave_label.get_width() / 2, HEIGHT * 0.75))
+
 
     for i, note in enumerate(white_keys):
         rect = pygame.Rect(piano_x + i * key_width, piano_y, key_width, key_height)
@@ -403,7 +419,7 @@ def draw_piano():
         pygame.draw.rect(screen, BLACK, rect, 2)
         white_rects[note] = rect
         label = font.render(KEY_LABELS[note], True, BLACK)
-        screen.blit(label, (rect.centerx - label.get_width() / 2, rect.bottom - 60))
+        screen.blit(label, (rect.centerx - label.get_width() / 2, rect.bottom - HEIGHT * 0.06))
 
     for i, note in enumerate(black_keys):
         if note != '':
@@ -412,10 +428,10 @@ def draw_piano():
             pygame.draw.rect(screen, color, rect)
             black_rects[note] = rect
             label = font.render(KEY_LABELS[note], True, WHITE)
-            screen.blit(label, (rect.centerx - label.get_width() / 2, rect.bottom - 60))
+            screen.blit(label, (rect.centerx - label.get_width() / 2, rect.bottom - HEIGHT * 0.06))
 
     button_text = "HOLD" if emotion_mode == "hold" else "LIVE"
-    button_color = (200, 200, 200) if emotion_mode == "hold" else (0, 255, 0)
+    button_color = (200, 200, 200) if emotion_mode == "hold" else (255, 0, 0)
 
     pygame.draw.rect(screen, button_color, emotion_button_rect)
     pygame.draw.rect(screen, BLACK, emotion_button_rect, 2)
@@ -472,6 +488,7 @@ def main():
 
                     # elif event.key == pygame.K_5:
                     #     update_emotion_enabled = True 
+                    # EMOTION SHORTCUTS FOR DEBUGGING
                     elif event.key == pygame.K_KP1:
                         current_emotion = "angry"
                     elif event.key == pygame.K_KP2:
@@ -486,6 +503,7 @@ def main():
                         current_emotion = "surprise"
                     elif event.key == pygame.K_KP7:
                         current_emotion = "sad"
+                    # OCTAVE SHORTCUTS FOR DEBUGGING
                     elif event.key == pygame.K_KP8:
                         if current_octave < 1:
                             current_octave += 1

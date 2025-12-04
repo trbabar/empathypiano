@@ -1,7 +1,6 @@
-// Arduino code: send button events over serial to Python
-int buttonPins[] = {2, 3, 4, 5, 6, 7, 8, 9, 10};
-int numButtons = 9;
-bool buttonStates[9];
+int buttonPins[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+int numButtons = 12;
+bool buttonStates[12];
 
 void setup() {
   Serial.begin(9600);
@@ -15,7 +14,7 @@ void loop() {
   for (int i = 0; i < numButtons; i++) {
     int state = digitalRead(buttonPins[i]);
     if (state == LOW && buttonStates[i] == HIGH) {
-      // Button pressed (LOW -> active)
+      // Button pressed
       Serial.print("PRESS ");
       Serial.println(i);
       buttonStates[i] = LOW;

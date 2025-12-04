@@ -33,6 +33,8 @@ The base octave the piano is in is 4. To change the octave, the user can give a 
 
 The Empathy Piano requires Python, preferrably 3.9, but any version under 3.11 should work.
 
+You can download Python 3.9 here: https://www.python.org/downloads/release/python-3925/
+
 Once an applicable version of python is installed, you can download the ZIP file of the Github directory and extract it. After extraction, first open the *installRequirements.bat* file. The project uses an array of different python libaries to achieve its visual, aural, and technical features.
 
 *installRequirements.bat* installs each library from the *requirements.txt* file to the applicable version for the project. An error that may occur is if a specific libary is too up to date, as tensorflow is only compatabile with certain older versions of protobuf.
